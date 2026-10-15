@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +46,7 @@ func (s *Server) AddPeer(url, id, token string) {
 		p.cancel()
 	}
 
+	s.peerStarted = true
 	s.peers[id] = peer
 	go peer.start(ctx, s)
 }
@@ -71,15 +74,18 @@ func (p peer) equals(other peer) bool {
 }
 
 func (p *peer) start(ctx context.Context, s *Server) {
+	tlsConfig, err := peerTLSConfig(s.peerTLS(), p.url)
+	if err != nil {
+		logrus.Errorf("Failed to connect to peer %s: malformed peer URL", p.url)
+		return
+	}
 	headers := http.Header{
 		ID:    {s.PeerID},
 		Token: {s.PeerToken},
 	}
 
 	dialer := &websocket.Dialer{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
+		TLSClientConfig:  tlsConfig,
 		HandshakeTimeout: HandshakeTimeOut,
 	}
 	ctx = context.WithValue(ctx, ContextKeyCaller, fmt.Sprintf("Peer url:%s, id:%s", p.url, p.id))
@@ -123,4 +129,23 @@ outer:
 		ws.Close()
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func peerTLSConfig(cfg *tls.Config, rawURL string) (*tls.Config, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "ws" && u.Scheme != "wss") || u.Hostname() == "" || u.User != nil {
+		return nil, fmt.Errorf("invalid peer URL")
+	}
+	if port := u.Port(); port != "" {
+		value, err := strconv.Atoi(port)
+		if err != nil || value < 1 || value > 65535 {
+			return nil, fmt.Errorf("invalid peer URL port")
+		}
+	}
+	if cfg == nil {
+		cfg = &tls.Config{}
+	}
+	cfg = cfg.Clone()
+	cfg.ServerName = u.Hostname()
+	return cfg, nil
 }

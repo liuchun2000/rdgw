@@ -97,130 +97,252 @@ Peers authenticate to one another via a shared token.
 Running Locally
 ---------------
 
-remotedialer provides an example client and server which can be run in
-standalone mode FOR TESTING ONLY. These are found in the `server/` and
-`client/` directories.`
+The `server/` and `client/` binaries are standalone examples for controlled
+testing and deployment experiments. The client must run on a host that can
+reach the target services. The server must be reachable by the client.
 
 ### Compile
 
-Compile the server and client:
-
-```
+```shell
 make server
 make client
 ```
 
-### Run
+### Client authentication
 
-Start the server first.
+The server authorization file maps each client ID to one or more active
+tokens. Keep this file readable only by the server process.
 
-```
-./server/server
-```
-
-The server has debug mode off by default. Enable it with `--debug`.
-
-The client proxies requests from the remotedialer server to a web server, so it
-needs to be run somewhere where it can access the web server you want to
-target. The remotedialer server also needs to be reachable by the client.
-
-For testing purposes, a basic HTTP file server is provided. Build the server with:
-
-```
-make dummy
+```json
+{
+  "foo": [
+    "foo-token-current",
+    "foo-token-next"
+  ],
+  "bar": [
+    "bar-token-current"
+  ]
+}
 ```
 
-Create a directory with files to serve, then run the web server from that directory:
-
-```
-mkdir www
-cd www
-echo 'hello' > bigfile
-/path/to/dummy
-```
-
-Run the client with
-
-```
-./client/client
-```
-
-Both server and client can be run with even more verbose logging:
-
-```
-CATTLE_TUNNEL_DATA_DEBUG=true ./server/server --debug
-CATTLE_TUNNEL_DATA_DEBUG=true ./client/client
-```
-
-### Usage
-
-If the remotedialer server is running on 192.168.0.42, and the web service that
-the client can access is running at address 127.0.0.1:8125, make proxied
-requests like this:
-
-```
-curl http://192.168.0.42:8123/client/foo/http/{https-server}:{port}/bigfile
-```
-```
-curl http://192.168.0.42:8123/client/foo/https/{https-server}:{port}/{path}
-```
-```
-ws://192.168.0.42:8123/client/foo/wss/{wss-server}:{port}/{path}
-```
-```
-ws://192.168.0.42:8123/client/foo/ws/{ws-server}:{port}/{path}
-```
-
-If TLS is required at the entry point, use a reverse proxy such as nginx with an SSL certificate.
-
-where `foo` is the hardcoded client ID for this test server.
-
-This test server only supports GET requests.
-
-### TCP Usage
-Start remotedialer servers with the `-socks5-listen :2222` flag for tcp:
-```
-./server/server -debug -id remotedial-server -token aaa -listen :8123  -socks5-listen :2222
-```
-
-SSH client usage with ncat:
-```
-ssh -o ProxyCommand='ncat --proxy {remotedial-server}:{socks5-port} --proxy-type socks5 --proxy-auth foo:pass %h %p' {user}@{dst_ip}
-```
-or with socat (version after 1.8.1)
-```
-ssh -o ProxyCommand='socat - SOCKS5:{remotedial-server}:{dst_ip}:{dst_port},socksport={socks5-port},socksuser=foo,sockspass=pass' {user}@{dst_ip}
-```
-
-### HA Usage
-
-To test remotedialer in HA mode, first start the dummy server from an appropriate directory, eg.:
+Create a token file for the client. The file contains only the token, optionally
+followed by a newline.
 
 ```shell
-cd /tmp
-mkdir www
-cd www
-echo 'hello' > bigfile
+mkdir -p conf
+cat > conf/client-auth.json <<'EOF'
+{
+  "foo": [
+    "foo-token-current",
+    "foo-token-next"
+  ]
+}
+EOF
+printf '%s\n' 'foo-token-current' > conf/foo.token
+chmod 600 conf/foo.token
+chmod 600 conf/client-auth.json
+```
+
+### Recommended split listeners
+
+Split mode keeps the public client connection endpoint separate from the
+internal HTTP/WebSocket proxy endpoint. The `connect-listen` address should be
+reachable by the client or by the TLS-terminating reverse proxy. The
+`proxy-listen` and `socks5-listen` addresses must be restricted to trusted
+internal callers with firewall rules, security groups, or NetworkPolicy.
+
+```shell
+./server/server \
+  -listener-mode split \
+  -id first-server \
+  -token peer-token \
+  -client-auth-file ./conf/client-auth.json \
+  -connect-listen 172.168.0.126:8123 \
+  -proxy-listen 172.168.0.126:8124 \
+  -socks5-listen 172.168.0.126:2222
+```
+
+```shell
+./client/client \
+  -id foo \
+  -token-file ./conf/foo.token \
+  -connect ws://172.168.0.126:8123/connect
+```
+
+When Nginx or an Ingress terminates TLS, use its public WSS address for the
+client connection:
+
+```shell
+./client/client \
+  -id foo \
+  -token-file ./conf/foo.token \
+  -connect wss://public.example.com/connect
+```
+
+The example server does not terminate TLS itself. Plain `ws://` is suitable only
+for local or controlled-network testing. Production deployments should expose
+only `/connect` through the TLS-terminating reverse proxy.
+
+### Single-listener compatibility mode
+
+Single mode preserves the legacy command shape, but `/connect` and `/client/...`
+share one listener. Use it only when the listener is protected by a trusted
+internal network boundary. Do not expose this port directly to the public
+Internet.
+
+```shell
+./server/server \
+  -listener-mode single \
+  -id first-server \
+  -token peer-token \
+  -client-auth-file ./conf/client-auth.json \
+  -listen 172.168.0.126:8123 \
+  -socks5-listen 172.168.0.126:2222
+```
+
+### HTTP, HTTPS, WebSocket, and WSS proxying
+
+The proxy URL format is:
+
+```text
+http://SERVER:PROXY_PORT/client/CLIENT_ID/SCHEME/TARGET_HOST[:PORT]/TARGET_PATH
+```
+
+Supported schemes are `http`, `https`, `ws`, and `wss`. Explicit target ports
+are supported and are preserved in the upstream HTTP `Host` header.
+
+```shell
+curl -v \
+  'http://172.168.0.126:8124/client/foo/http/updownload.cogiot.net:5000/cogiot/jstt/'
+```
+
+```shell
+curl -v \
+  'http://172.168.0.126:8124/client/foo/https/www.baidu.com/'
+```
+
+For an upstream service requiring HTTP Basic Authentication, send the normal
+`Authorization` header. The proxy forwards ordinary application headers.
+
+```shell
+curl -v \
+  -u 'username:password' \
+  'http://172.168.0.126:8124/client/foo/http/updownload.cogiot.net:5000/cogiot/jstt/'
+```
+
+WebSocket proxy requests must use a WebSocket client and a valid Upgrade
+handshake. In the proxy path, the `ws` or `wss` segment selects the protocol
+used from the client-side host to the target service. The URL scheme used by
+the caller is separate: use `ws://` for an unencrypted server entry point, or
+`wss://` when a TLS-terminating reverse proxy is in front of the server.
+
+```text
+ws://172.168.0.126:8124/client/foo/ws/internal.example.com/socket
+wss://proxy.example.com/client/foo/wss/internal.example.com/socket
+```
+
+For upstream HTTPS/WSS services with private or self-signed certificates, keep
+the default compatibility mode or explicitly enable certificate verification
+with a CA bundle:
+
+```shell
+./server/server \
+  -listener-mode split \
+  -client-auth-file ./conf/client-auth.json \
+  -connect-listen 172.168.0.126:8123 \
+  -proxy-listen 172.168.0.126:8124 \
+  -socks5-listen 172.168.0.126:2222 \
+  -upstream-tls-verify \
+  -upstream-ca-file ./conf/private-ca.pem
+```
+
+With `-upstream-tls-verify` omitted, upstream HTTPS/WSS certificate validation
+is disabled for compatibility with internal self-signed services. This setting
+must not be used as a substitute for securing the server-client connection.
+
+### TCP and SSH through SOCKS5
+
+The SOCKS5 listener accepts TCP `CONNECT` requests. The username identifies the
+remotedialer client. The password must be non-empty for the current protocol
+implementation, but is not a separate business authorization mechanism; keep
+the listener on a trusted internal network.
+
+```shell
+ssh -o 'ProxyCommand=socat - SOCKS5:172.168.0.126:%h:%p,socksport=2222,socksuser=foo,sockspass=pass' root@10.0.0.20
+```
+
+```shell
+ssh -o 'ProxyCommand=ncat --proxy 172.168.0.126:2222 --proxy-type socks5 --proxy-auth foo:pass %h %p' root@10.0.0.20
+```
+
+### Dummy HTTP service
+
+Build and run the test HTTP service:
+
+```shell
+make dummy
+mkdir -p /tmp/remotedialer-www
+printf '%s\n' 'hello' > /tmp/remotedialer-www/index.html
+cd /tmp/remotedialer-www
 /path/to/dummy -listen :8125
 ```
 
-Then start two peer remotedialer servers with the `-peers id:token:url` flag:
+Then request it through the proxy listener:
 
 ```shell
-./server/server -debug -id first -token aaa -listen :8123 -peers second:aaa:ws://localhost:8124/connect &
-./server/server -debug -id second -token aaa -listen :8124 -peers first:aaa:ws://localhost:8123/connect
+curl -v 'http://172.168.0.126:8124/client/foo/http/127.0.0.1:8125/'
 ```
 
+### HA peering
 
-Then connect a client to the first server, eg:
+Peers use the existing `-token` and `-peers id:token:url` options. Peer tokens
+are separate from ordinary client tokens.
+
 ```shell
-./client/client -id foo -connect ws://localhost:8123/connect
+./server/server \
+  -listener-mode single \
+  -id first \
+  -token peer-token \
+  -client-auth-file ./conf/client-auth.json \
+  -listen 127.0.0.1:8123 \
+  -peers second:peer-token:ws://127.0.0.1:8124/connect
 ```
 
-Finally, use the second server to make a request to the client via the first server:
+```shell
+./server/server \
+  -listener-mode single \
+  -id second \
+  -token peer-token \
+  -client-auth-file ./conf/client-auth.json \
+  -listen 127.0.0.1:8124 \
+  -peers first:peer-token:ws://127.0.0.1:8123/connect
 ```
-curl http://localhost:8124/client/foo/http/127.0.0.1:8125/
+
+```shell
+./client/client \
+  -id foo \
+  -token-file ./conf/foo.token \
+  -connect ws://127.0.0.1:8123/connect
 ```
+
+### Current limitations
+
+- The example client currently requires `-token-file`; older client commands
+  without a token file must be migrated when server client authentication is
+  enabled.
+- If `-client-auth-file` is omitted, the example server accepts any non-empty
+  `X-Tunnel-ID`. Treat this as an unsafe compatibility mode, never as a public
+  deployment configuration.
+- In single mode, `/client/...` shares the listener with `/connect`; network
+  isolation is required to prevent direct public access to the proxy route.
+- The proxy forwards individual HTTP/HTTPS/WS/WSS requests. It does not rewrite
+  HTML, JavaScript, CSS, redirects, cookies, or absolute resource URLs, so it is
+  not a transparent whole-site reverse proxy.
+- Complete IPv6 authority handling, client outbound allowlists, full timeout and
+  concurrency limits, CLI private-CA options for client/peer, and full TLS
+  integration tests remain follow-up work.
+- Do not enable `-debug` in production. It enables tunnel data debugging and can
+  expose sensitive payloads in logs.
 
 # Versioning
 
