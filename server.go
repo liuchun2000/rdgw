@@ -1,6 +1,7 @@
 package remotedialer
 
 import (
+	"crypto/tls"
 	"net/http"
 	"sync"
 	"time"
@@ -32,6 +33,45 @@ type Server struct {
 	sessions                *sessionManager
 	peers                   map[string]peer
 	peerLock                sync.Mutex
+	peerTLSConfig           *tls.Config
+	peerStarted             bool
+}
+
+// SetPeerTLSConfig configures TLS used for outbound peer WebSocket connections.
+// The configuration is copied before use and may be set before AddPeer.
+func (s *Server) SetPeerTLSConfig(cfg *tls.Config) error {
+	if cfg == nil {
+		return errors.New("peer TLS config must not be nil")
+	}
+	if cfg.InsecureSkipVerify {
+		return errors.New("peer TLS config must verify certificates")
+	}
+	if cfg.MinVersion != 0 && cfg.MinVersion < tls.VersionTLS12 {
+		return errors.New("peer TLS config requires TLS 1.2 or newer")
+	}
+	if cfg.MaxVersion != 0 && cfg.MaxVersion < tls.VersionTLS12 {
+		return errors.New("peer TLS config requires TLS 1.2 or newer")
+	}
+	s.peerLock.Lock()
+	defer s.peerLock.Unlock()
+	if s.peerStarted {
+		return errors.New("peer TLS config must be set before AddPeer")
+	}
+	s.peerTLSConfig = cfg.Clone()
+	return nil
+}
+
+func (s *Server) peerTLS() *tls.Config {
+	s.peerLock.Lock()
+	defer s.peerLock.Unlock()
+	if s.peerTLSConfig == nil {
+		return &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	cfg := s.peerTLSConfig.Clone()
+	if cfg.MinVersion == 0 {
+		cfg.MinVersion = tls.VersionTLS12
+	}
+	return cfg
 }
 
 func New(auth Authorizer, errorWriter ErrorWriter) *Server {
