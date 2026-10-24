@@ -75,6 +75,11 @@ func TestSession_sessionKeys(t *testing.T) {
 	if got, want := s.getSessionKeys(clientKey), map[int]bool{sessionKey: true}; !reflect.DeepEqual(got, want) {
 		t.Errorf("incorrect result from getSessionKeys, got: %v, want %v", got, want)
 	}
+	keys := s.getSessionKeys(clientKey)
+	delete(keys, sessionKey)
+	if !s.hasSessionKey(clientKey) {
+		t.Fatal("mutating getSessionKeys result changed session state")
+	}
 
 	s.removeSessionKey(clientKey, sessionKey)
 	if got, want := len(s.remoteClientKeys), 0; got != want {

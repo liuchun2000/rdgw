@@ -165,7 +165,21 @@ func (s *Session) removeSessionKey(clientKey string, sessionKey int) {
 func (s *Session) getSessionKeys(clientKey string) map[int]bool {
 	s.RLock()
 	defer s.RUnlock()
-	return s.remoteClientKeys[clientKey]
+	keys := s.remoteClientKeys[clientKey]
+	if len(keys) == 0 {
+		return nil
+	}
+	copyKeys := make(map[int]bool, len(keys))
+	for key, active := range keys {
+		copyKeys[key] = active
+	}
+	return copyKeys
+}
+
+func (s *Session) hasSessionKey(clientKey string) bool {
+	s.RLock()
+	defer s.RUnlock()
+	return len(s.remoteClientKeys[clientKey]) > 0
 }
 
 func (s *Session) startPings(rootCtx context.Context) {
@@ -322,18 +336,24 @@ func (s *Session) Close() {
 	s.conns = map[int64]*connection{}
 }
 
-func (s *Session) sessionAdded(clientKey string, sessionKey int64) {
+func (s *Session) sessionAdded(clientKey string, sessionKey int64) error {
 	client := fmt.Sprintf("%s/%d", clientKey, sessionKey)
-	_, err := s.writeMessage(time.Time{}, newAddClient(client))
+	_, err := s.writeMessage(time.Now().Add(SessionNotifyTimeout), newAddClient(client))
 	if err != nil {
 		s.conn.Close()
 	}
+	return err
 }
 
-func (s *Session) sessionRemoved(clientKey string, sessionKey int64) {
+func (s *Session) sessionRemoved(clientKey string, sessionKey int64) error {
 	client := fmt.Sprintf("%s/%d", clientKey, sessionKey)
-	_, err := s.writeMessage(time.Time{}, newRemoveClient(client))
+	_, err := s.writeMessage(time.Now().Add(SessionNotifyTimeout), newRemoveClient(client))
 	if err != nil {
 		s.conn.Close()
 	}
+	return err
+}
+
+func (s *Session) closeSession() {
+	_ = s.conn.Close()
 }

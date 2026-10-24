@@ -12,4 +12,6 @@ const (
 	HandshakeTimeOut       = 10 * time.Second
 	// SendErrorTimeout sets the maximum duration for sending an error message to close a single connection
 	SendErrorTimeout = 5 * time.Second
+	// SessionNotifyTimeout limits peer session add/remove control messages.
+	SessionNotifyTimeout = 5 * time.Second
 )

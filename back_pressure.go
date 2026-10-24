@@ -2,6 +2,7 @@ package remotedialer
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -46,24 +47,30 @@ func (b *backPressure) OnResume() {
 	b.cond.Broadcast()
 }
 
-func (b *backPressure) Pause() {
+func (b *backPressure) Pause() error {
 	b.cond.L.Lock()
 	defer b.cond.L.Unlock()
 	if b.paused {
-		return
+		return nil
 	}
-	b.c.Pause()
+	if err := b.c.Pause(); err != nil {
+		return fmt.Errorf("pause connection: %w", err)
+	}
 	b.paused = true
+	return nil
 }
 
-func (b *backPressure) Resume() {
+func (b *backPressure) Resume() error {
 	b.cond.L.Lock()
 	defer b.cond.L.Unlock()
 	if !b.paused {
-		return
+		return nil
 	}
-	b.c.Resume()
+	if err := b.c.Resume(); err != nil {
+		return fmt.Errorf("resume connection: %w", err)
+	}
 	b.paused = false
+	return nil
 }
 
 func (b *backPressure) Wait(cancel context.CancelFunc) {
