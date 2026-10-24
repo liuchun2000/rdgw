@@ -43,53 +43,69 @@ func (r *readBuffer) Status() string {
 	return fmt.Sprintf("%d/%d", r.readCount, r.offerCount)
 }
 
-func (r *readBuffer) Offer(reader io.Reader) error {
+func (r *readBuffer) SetDeadline(deadline time.Time) {
 	r.cond.L.Lock()
-	defer r.cond.L.Unlock()
+	r.deadline = deadline
+	r.cond.Broadcast()
+	r.cond.L.Unlock()
+}
 
-	if r.err != nil {
-		return r.err
-	}
+func (r *readBuffer) Offer(reader io.Reader) error {
+	var shouldPause bool
+	var offerErr error
+	func() {
+		r.cond.L.Lock()
+		defer r.cond.L.Unlock()
 
-	remaining := int64(maxBufferLimit - r.buf.Len())
-	if remaining < 0 {
-		return errReadBufferLimit
-	}
-
-	// 只向内存缓冲写入剩余容量，并额外探测一个字节判断是否超限。
-	n, err := io.Copy(&r.buf, io.LimitReader(reader, remaining))
-	r.offerCount += n
-	if err != nil {
-		return err
-	}
-
-	if n == remaining {
-		var extra [1]byte
-		extraN, extraErr := io.ReadFull(reader, extra[:])
-		if extraN > 0 {
-			return errReadBufferLimit
+		if r.err != nil {
+			offerErr = r.err
+			return
 		}
-		if extraErr != nil && !errors.Is(extraErr, io.EOF) && !errors.Is(extraErr, io.ErrUnexpectedEOF) {
-			return extraErr
+
+		remaining := int64(maxBufferLimit - r.buf.Len())
+		if remaining < 0 {
+			offerErr = errReadBufferLimit
+			return
 		}
-	}
 
-	if n > 0 {
-		r.cond.Broadcast()
-	}
+		// 只向内存缓冲写入剩余容量，并额外探测一个字节判断是否超限。
+		n, err := io.Copy(&r.buf, io.LimitReader(reader, remaining))
+		r.offerCount += n
+		if err != nil {
+			offerErr = err
+			return
+		}
 
-	if r.buf.Len() > MaxBuffer {
-		r.backPressure.Pause()
-	}
+		if n == remaining {
+			var extra [1]byte
+			extraN, extraErr := io.ReadFull(reader, extra[:])
+			if extraN > 0 {
+				offerErr = errReadBufferLimit
+				return
+			}
+			if extraErr != nil && !errors.Is(extraErr, io.EOF) && !errors.Is(extraErr, io.ErrUnexpectedEOF) {
+				offerErr = extraErr
+				return
+			}
+		}
 
+		if n > 0 {
+			r.cond.Broadcast()
+		}
+		shouldPause = r.buf.Len() > MaxBuffer
+	}()
+	if offerErr != nil {
+		return offerErr
+	}
+	if shouldPause {
+		return r.backPressure.Pause()
+	}
 	return nil
 }
 
 func (r *readBuffer) Read(b []byte) (int, error) {
-	r.cond.L.Lock()
-	defer r.cond.L.Unlock()
-
 	for {
+		r.cond.L.Lock()
 		if r.buf.Len() > 0 {
 			n, err := r.buf.Read(b)
 			if err != nil {
@@ -100,8 +116,12 @@ func (r *readBuffer) Read(b []byte) (int, error) {
 			}
 			r.readCount += int64(n)
 			r.cond.Broadcast()
-			if r.buf.Len() < MaxBuffer/8 {
-				r.backPressure.Resume()
+			shouldResume := r.buf.Len() < MaxBuffer/8
+			r.cond.L.Unlock()
+			if shouldResume {
+				if err := r.backPressure.Resume(); err != nil {
+					return n, err
+				}
 			}
 			return n, nil
 		}
@@ -112,24 +132,31 @@ func (r *readBuffer) Read(b []byte) (int, error) {
 		}
 
 		if r.err != nil {
+			r.cond.L.Unlock()
 			return 0, r.err
 		}
 
 		now := time.Now()
 		if !r.deadline.IsZero() {
 			if now.After(r.deadline) {
+				r.cond.L.Unlock()
 				return 0, errors.New("deadline exceeded")
 			}
 		}
 
 		var t *time.Timer
 		if !r.deadline.IsZero() {
-			t = time.AfterFunc(r.deadline.Sub(now), func() { r.cond.Broadcast() })
+			t = time.AfterFunc(r.deadline.Sub(now), func() {
+				r.cond.L.Lock()
+				r.cond.Broadcast()
+				r.cond.L.Unlock()
+			})
 		}
 		r.cond.Wait()
 		if t != nil {
 			t.Stop()
 		}
+		r.cond.L.Unlock()
 	}
 }
 

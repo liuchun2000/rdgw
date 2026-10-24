@@ -10,25 +10,104 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/rancher/remotedialer/metrics"
+	"github.com/sirupsen/logrus"
 )
 
 type sessionListener interface {
-	sessionAdded(clientKey string, sessionKey int64)
-	sessionRemoved(clientKey string, sessionKey int64)
+	sessionAdded(clientKey string, sessionKey int64) error
+	sessionRemoved(clientKey string, sessionKey int64) error
+	closeSession()
+}
+
+type sessionEvent struct {
+	clientKey  string
+	sessionKey int64
+	removed    bool
 }
 
 type sessionManager struct {
 	sync.Mutex
 	clients   map[string][]*Session
 	peers     map[string][]*Session
-	listeners map[sessionListener]bool
+	listeners map[sessionListener]*sessionNotificationQueue
+}
+
+const maxSessionNotifyQueue = 1024
+
+type sessionNotificationQueue struct {
+	manager  *sessionManager
+	listener sessionListener
+	events   chan sessionEvent
+	stop     chan struct{}
+	done     chan struct{}
+	once     sync.Once
+}
+
+// 每个 listener 独立排队，避免慢 peer 阻塞其他 peer；队列满时丢弃该 peer 并让它重连重建状态。
+func newSessionNotificationQueue(manager *sessionManager, listener sessionListener) *sessionNotificationQueue {
+	queue := &sessionNotificationQueue{
+		manager:  manager,
+		listener: listener,
+		events:   make(chan sessionEvent, maxSessionNotifyQueue),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	go queue.run()
+	return queue
+}
+
+func (q *sessionNotificationQueue) enqueue(event sessionEvent) bool {
+	select {
+	case <-q.stop:
+		return false
+	default:
+	}
+	select {
+	case q.events <- event:
+		return true
+	default:
+		return false
+	}
+}
+
+func (q *sessionNotificationQueue) stopAndWait() {
+	q.once.Do(func() { close(q.stop) })
+	<-q.done
+}
+
+func (q *sessionNotificationQueue) run() {
+	defer close(q.done)
+	for {
+		select {
+		case <-q.stop:
+			return
+		default:
+		}
+		select {
+		case <-q.stop:
+			return
+		case event := <-q.events:
+			var err error
+			if event.removed {
+				err = q.listener.sessionRemoved(event.clientKey, event.sessionKey)
+			} else {
+				err = q.listener.sessionAdded(event.clientKey, event.sessionKey)
+			}
+			if err != nil {
+				logrus.WithError(err).Warn("session listener notification failed")
+				q.listener.closeSession()
+				q.manager.listenerFailed(q.listener, q)
+				return
+			}
+		}
+	}
 }
 
 func newSessionManager() *sessionManager {
 	return &sessionManager{
 		clients:   map[string][]*Session{},
 		peers:     map[string][]*Session{},
-		listeners: map[sessionListener]bool{},
+		listeners: map[sessionListener]*sessionNotificationQueue{},
 	}
 }
 
@@ -43,27 +122,52 @@ func toDialer(s *Session, prefix string) Dialer {
 
 func (sm *sessionManager) removeListener(listener sessionListener) {
 	sm.Lock()
-	defer sm.Unlock()
-
+	queue := sm.listeners[listener]
 	delete(sm.listeners, listener)
+	sm.Unlock()
+	if queue != nil {
+		queue.stopAndWait()
+	}
 }
 
 func (sm *sessionManager) addListener(listener sessionListener) {
 	sm.Lock()
-	defer sm.Unlock()
-
-	sm.listeners[listener] = true
+	queue := newSessionNotificationQueue(sm, listener)
+	sm.listeners[listener] = queue
+	overflow := false
 
 	for k, sessions := range sm.clients {
 		for _, session := range sessions {
-			listener.sessionAdded(k, session.sessionKey)
+			overflow = !queue.enqueue(sessionEvent{clientKey: k, sessionKey: session.sessionKey})
+			if overflow {
+				break
+			}
+		}
+		if overflow {
+			break
 		}
 	}
 
-	for k, sessions := range sm.peers {
-		for _, session := range sessions {
-			listener.sessionAdded(k, session.sessionKey)
+	if !overflow {
+		for k, sessions := range sm.peers {
+			for _, session := range sessions {
+				overflow = !queue.enqueue(sessionEvent{clientKey: k, sessionKey: session.sessionKey})
+				if overflow {
+					break
+				}
+			}
+			if overflow {
+				break
+			}
 		}
+	}
+	if overflow {
+		delete(sm.listeners, listener)
+	}
+	sm.Unlock()
+	if overflow {
+		listener.closeSession()
+		queue.stopAndWait()
 	}
 }
 
@@ -88,8 +192,7 @@ func (sm *sessionManager) getDialer(clientKey string) (Dialer, error) {
 
 	for _, sessions := range sm.peers {
 		for _, session := range sessions {
-			keys := session.getSessionKeys(clientKey)
-			if len(keys) > 0 {
+			if session.hasSessionKey(clientKey) {
 				return toDialer(session, clientKey), nil
 			}
 		}
@@ -103,7 +206,6 @@ func (sm *sessionManager) add(clientKey string, conn *websocket.Conn, peer bool)
 	session := newSession(sessionKey, clientKey, newWSConn(conn))
 
 	sm.Lock()
-	defer sm.Unlock()
 
 	if peer {
 		sm.peers[clientKey] = append(sm.peers[clientKey], session)
@@ -112,9 +214,15 @@ func (sm *sessionManager) add(clientKey string, conn *websocket.Conn, peer bool)
 	}
 	metrics.IncSMTotalAddWS(clientKey, peer)
 
-	for l := range sm.listeners {
-		l.sessionAdded(clientKey, session.sessionKey)
+	var overflow []*sessionNotificationQueue
+	for listener, queue := range sm.listeners {
+		if !queue.enqueue(sessionEvent{clientKey: clientKey, sessionKey: session.sessionKey}) {
+			delete(sm.listeners, listener)
+			overflow = append(overflow, queue)
+		}
 	}
+	sm.Unlock()
+	sm.closeListeners(overflow)
 
 	return session
 }
@@ -122,7 +230,6 @@ func (sm *sessionManager) add(clientKey string, conn *websocket.Conn, peer bool)
 func (sm *sessionManager) remove(s *Session) {
 	var isPeer bool
 	sm.Lock()
-	defer sm.Unlock()
 
 	for i, store := range []map[string][]*Session{sm.clients, sm.peers} {
 		var newSessions []*Session
@@ -147,9 +254,30 @@ func (sm *sessionManager) remove(s *Session) {
 		}
 	}
 
-	for l := range sm.listeners {
-		l.sessionRemoved(s.clientKey, s.sessionKey)
+	var overflow []*sessionNotificationQueue
+	for listener, queue := range sm.listeners {
+		if !queue.enqueue(sessionEvent{clientKey: s.clientKey, sessionKey: s.sessionKey, removed: true}) {
+			delete(sm.listeners, listener)
+			overflow = append(overflow, queue)
+		}
 	}
+	sm.Unlock()
+	sm.closeListeners(overflow)
 
 	s.Close()
+}
+
+func (sm *sessionManager) closeListeners(queues []*sessionNotificationQueue) {
+	for _, queue := range queues {
+		queue.listener.closeSession()
+		queue.stopAndWait()
+	}
+}
+
+func (sm *sessionManager) listenerFailed(listener sessionListener, queue *sessionNotificationQueue) {
+	sm.Lock()
+	defer sm.Unlock()
+	if sm.listeners[listener] == queue {
+		delete(sm.listeners, listener)
+	}
 }

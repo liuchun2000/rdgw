@@ -120,14 +120,31 @@ func (c *connection) OnResume() {
 	c.backPressure.OnResume()
 }
 
-func (c *connection) Pause() {
+func (c *connection) Pause() error {
 	msg := newPause(c.connID)
-	_, _ = c.session.writeMessage(c.writeDeadline, msg)
+	_, err := c.session.writeMessage(c.controlWriteDeadline(), msg)
+	if err != nil && c.session.conn != nil {
+		_ = c.session.conn.Close()
+	}
+	return err
 }
 
-func (c *connection) Resume() {
+func (c *connection) Resume() error {
 	msg := newResume(c.connID)
-	_, _ = c.session.writeMessage(c.writeDeadline, msg)
+	_, err := c.session.writeMessage(c.controlWriteDeadline(), msg)
+	if err != nil && c.session.conn != nil {
+		_ = c.session.conn.Close()
+	}
+	return err
+}
+
+func (c *connection) controlWriteDeadline() time.Time {
+	deadline := c.GetWriteDeadline()
+	limit := time.Now().Add(SessionNotifyTimeout)
+	if deadline.IsZero() || deadline.After(limit) {
+		return limit
+	}
+	return deadline
 }
 
 func (c *connection) writeErr(err error) {
@@ -157,7 +174,7 @@ func (c *connection) SetDeadline(t time.Time) error {
 }
 
 func (c *connection) SetReadDeadline(t time.Time) error {
-	c.buffer.deadline = t
+	c.buffer.SetDeadline(t)
 	return nil
 }
 

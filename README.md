@@ -112,7 +112,9 @@ The client example accepts `-id` (default `foo`), `-connect` (default
 `ws://localhost:8123/connect`), `-token-file` (required), and `-debug` (debug
 log level, enabled by default). Its token file contains the client token; the
 client sends it as `X-Tunnel-Token` together with `X-Tunnel-ID` during the
-WebSocket handshake.
+WebSocket handshake. The example process keeps running and reconnects after a
+connection failure using cancellable exponential backoff with jitter; SIGINT
+and SIGTERM stop the reconnect loop.
 
 ### Client authentication
 
@@ -423,7 +425,8 @@ are:
   `total_remove_connections`: tunneled connections opened and closed,
   labeled by `clientkey`, `proto`, and `addr`.
 - `session_server_total_transmit_bytes` /
-  `total_receive_bytes` / `total_error_bytes`: tunnel traffic volume per
+  `session_server_total_receive_bytes` /
+  `session_server_total_transmit_error_bytes`: tunnel traffic volume per
   client.
 - `session_server_total_peer_ws_attempt` /
   `total_peer_ws_connected` / `total_peer_ws_disconnected`: HA peer

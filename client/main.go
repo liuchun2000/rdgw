@@ -3,9 +3,14 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/rancher/remotedialer"
 	"github.com/sirupsen/logrus"
@@ -50,5 +55,45 @@ func main() {
 		headers.Set("X-Tunnel-Token", token)
 	}
 
-	remotedialer.ClientConnect(context.Background(), addr, headers, nil, func(string, string) bool { return true }, nil)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := runWithReconnect(ctx, time.Second, time.Minute, func(ctx context.Context) error {
+		return remotedialer.ConnectToProxy(ctx, addr, headers, func(string, string) bool { return true }, nil, nil)
+	}); err != nil {
+		logrus.WithError(err).Error("client stopped")
+	}
+}
+
+func runWithReconnect(ctx context.Context, initialBackoff, maxBackoff time.Duration, connect func(context.Context) error) error {
+	if initialBackoff <= 0 || maxBackoff < initialBackoff {
+		return fmt.Errorf("invalid reconnect backoff range")
+	}
+	backoff := initialBackoff
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+		err := connect(ctx)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if err != nil {
+			logrus.WithError(err).Warn("connection failed; retrying")
+		} else {
+			logrus.Warn("connection ended; retrying")
+		}
+		jittered := backoff/2 + time.Duration(rand.Int63n(int64(backoff/2)+1))
+		timer := time.NewTimer(jittered)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
+		if backoff >= maxBackoff/2 {
+			backoff = maxBackoff
+		} else {
+			backoff *= 2
+		}
+	}
 }
