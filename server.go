@@ -1,6 +1,7 @@
 package remotedialer
 
 import (
+	"crypto/subtle"
 	"crypto/tls"
 	"net/http"
 	"sync"
@@ -98,7 +99,6 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	upgrader := websocket.Upgrader{
 		HandshakeTimeout: 5 * time.Second,
-		CheckOrigin:      func(r *http.Request) bool { return true },
 		Error:            s.errorWriter,
 	}
 
@@ -132,7 +132,7 @@ func (s *Server) auth(req *http.Request) (clientKey string, authed, peer bool, e
 		p, ok := s.peers[id]
 		s.peerLock.Unlock()
 
-		if ok && p.token == token {
+		if ok && len(p.token) == len(token) && subtle.ConstantTimeCompare([]byte(p.token), []byte(token)) == 1 {
 			return id, true, true, nil
 		}
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -21,8 +20,13 @@ import (
 //   - target   从 SOCKS5 CONNECT 请求的 ADDR:PORT 拿
 //
 // 握手成功后，通过 server.Dialer(clientKey) 拨号，然后裸字节双向透传。
-func handleSocks5(server *remotedialer.Server, c net.Conn) {
+func handleSocks5(server *remotedialer.Server, c net.Conn, limit chan struct{}) {
 	defer c.Close()
+	if !tryAcquire(limit) {
+		_, _ = c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		return
+	}
+	defer release(limit)
 
 	id := atomic.AddInt64(&counter, 1)
 
@@ -141,11 +145,12 @@ func handleSocks5(server *remotedialer.Server, c net.Conn) {
 			return
 		}
 		domain := make([]byte, int(l[0]))
-		if len(domain) == 0 || len(domain) > 253 || strings.ContainsAny(string(domain), "\x00\r\n") {
-			return
-		}
 		if _, err := io.ReadFull(c, domain); err != nil {
 			logrus.Errorf("[%03d] SOCKS5 READ DOMAIN ERR: %v", id, err)
+			return
+		}
+		if !validDomain(string(domain)) {
+			_, _ = c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 			return
 		}
 		host = string(domain)
@@ -210,6 +215,29 @@ func handleSocks5(server *remotedialer.Server, c net.Conn) {
 	logrus.Infof("[%03d] SOCKS5 CLOSED client=%s target=%s", id, clientKey, targetAddr)
 }
 
+func tryAcquire(limit chan struct{}) bool {
+	if limit == nil {
+		return true
+	}
+	select {
+	case limit <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func release(limit chan struct{}) {
+	if limit != nil {
+		<-limit
+	}
+}
+
+// validDomain 校验 SOCKS5 CONNECT 请求里的域名：非空、长度合规、无控制字符
+func validDomain(domain string) bool {
+	return len(domain) > 0 && len(domain) <= 253 && !strings.ContainsAny(domain, "\x00\r\n")
+}
+
 // startSocks5Listener 起一个 SOCKS5 监听，每条连接交给 handleSocks5。
 type socks5Listener struct {
 	ln    net.Listener
@@ -233,7 +261,7 @@ func containsClient(server *remotedialer.Server, clientID string) bool {
 	return false
 }
 
-func startSocks5Listener(server *remotedialer.Server, listenAddr string) (*socks5Listener, error) {
+func startSocks5Listener(server *remotedialer.Server, listenAddr string, limit chan struct{}) (*socks5Listener, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, err
@@ -250,11 +278,8 @@ func startSocks5Listener(server *remotedialer.Server, listenAddr string) (*socks
 				}
 				return
 			}
-			go handleSocks5(server, conn)
+			go handleSocks5(server, conn, limit)
 		}
 	}()
 	return result, nil
 }
-
-// 保留 bufio import 的占位（如果你以后想加自定义握手，会用到 bufio）
-var _ = bufio.NewReader
