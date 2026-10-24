@@ -108,6 +108,12 @@ make server
 make client
 ```
 
+The client example accepts `-id` (default `foo`), `-connect` (default
+`ws://localhost:8123/connect`), `-token-file` (required), and `-debug` (debug
+log level, enabled by default). Its token file contains the client token; the
+client sends it as `X-Tunnel-Token` together with `X-Tunnel-ID` during the
+WebSocket handshake.
+
 ### Client authentication
 
 The server authorization file maps each client ID to one or more active
@@ -150,6 +156,13 @@ internal HTTP/WebSocket proxy endpoint. The `connect-listen` address should be
 reachable by the client or by the TLS-terminating reverse proxy. The
 `proxy-listen` and `socks5-listen` addresses must be restricted to trusted
 internal callers with firewall rules, security groups, or NetworkPolicy.
+Split mode requires both `-connect-listen` and `-proxy-listen` and forbids
+`-listen`; single mode uses `-listen` and forbids the split listener options.
+The SOCKS5 listener is disabled unless `-socks5-listen` is explicitly set.
+The `/client/...` HTTP proxy and SOCKS5 listener do not authenticate callers;
+any caller that can reach them can use a connected client's network access.
+Client tokens authenticate `/connect` sessions only. Protect these listeners
+with the network boundary rather than exposing them as public APIs.
 
 ```shell
 ./server/server \
@@ -168,6 +181,25 @@ internal callers with firewall rules, security groups, or NetworkPolicy.
   -token-file ./conf/foo.token \
   -connect ws://172.168.0.126:8123/connect
 ```
+
+### Origin allowlist
+
+When browser requests send an `Origin` header to `/connect`, configure
+`-origin-allowlist-file` with a JSON array of exact origins:
+
+```json
+["https://console.example.com", "https://admin.example.com"]
+```
+
+Any non-empty Origin not listed in the file is rejected. The file is optional;
+when omitted, non-empty Origins are rejected. Connections without an Origin,
+including the example client, remain supported. Origin matching is exact and
+does not replace the client ID/token check.
+The WebSocket upgrader also keeps Gorilla's default same-origin check, so an
+allowlisted browser Origin may still need to match the server request Host.
+When either auth file is configured, changes to configured files can be
+reloaded together with `SIGHUP`; a failed reload leaves the previous snapshot
+active.
 
 When Nginx or an Ingress terminates TLS, use its public WSS address for the
 client connection:
@@ -259,13 +291,35 @@ with a CA bundle:
 With `-upstream-tls-verify` omitted, upstream HTTPS/WSS certificate validation
 is disabled for compatibility with internal self-signed services. This setting
 must not be used as a substitute for securing the server-client connection.
+When verification is enabled, `-upstream-ca-file` adds PEM certificates to the
+system trust store. The ordinary example client has no private-CA flag for its
+outbound WSS connection and uses the system trust store.
+
+The example server does not impose an absolute lifetime on HTTP proxy requests.
+After response headers arrive, it closes a response whose body has produced no
+data for 60 seconds by default; configure this response-body idle timeout with
+`-http-idle-timeout` (use `0` to disable). SSE streams with periodic data or
+heartbeats can remain connected. This timeout does not limit request-body
+uploads or total request duration. WebSocket/WSS upgrades are not subject to
+this body idle timeout. Upstream response headers, including a WebSocket
+handshake response, must arrive within 120 seconds by default; configure this
+with `-response-header-timeout` (use `0` to disable).
+
+HTTP/WS proxy concurrency defaults to 256 and SOCKS5 concurrency defaults to 32.
+Configure them independently with `-http-proxy-limit` and `-socks5-limit`;
+`0` means unlimited. These limits apply to active proxy connections, not to the
+number of connected clients.
 
 ### TCP and SSH through SOCKS5
 
 The SOCKS5 listener accepts TCP `CONNECT` requests. The username identifies the
-remotedialer client. The password must be non-empty for the current protocol
-implementation, but is not a separate business authorization mechanism; keep
-the listener on a trusted internal network.
+remotedialer client and must match a currently connected client ID. The
+password must be non-empty for protocol compatibility, but is not checked as a
+credential and does not provide caller authorization. Each active SOCKS5
+connection counts against `-socks5-limit`. Its 30-second handshake deadline
+ends after CONNECT succeeds, so established TCP streams have no absolute
+lifetime imposed by the example server. Keep the listener on a trusted internal
+network.
 
 ```shell
 ssh -o 'ProxyCommand=socat - SOCKS5:172.168.0.126:%h:%p,socksport=2222,socksuser=foo,sockspass=pass' root@10.0.0.20
@@ -296,7 +350,12 @@ curl -v 'http://172.168.0.126:8124/client/foo/http/127.0.0.1:8125/'
 ### HA peering
 
 Peers use the existing `-token` and `-peers id:token:url` options. Peer tokens
-are separate from ordinary client tokens.
+are separate from ordinary client tokens. Each server needs its own `-id` and
+`-token`; configure the other server in `-peers` on both sides. Peer connections
+use the system CA store by default; `-peer-ca-file` adds private CA
+certificates for WSS peers and must be configured before peers are added. This
+option does not affect ordinary client WSS connections or upstream HTTPS/WSS
+trust settings.
 
 ```shell
 ./server/server \
@@ -325,24 +384,81 @@ are separate from ordinary client tokens.
   -connect ws://127.0.0.1:8123/connect
 ```
 
+For peer servers using WSS with certificates issued by a private CA, provide
+that CA bundle on each server before adding the peer:
+
+```shell
+./server/server \
+  -id first \
+  -token peer-token \
+  -peer-ca-file ./conf/peer-ca.pem \
+  -listen 127.0.0.1:8123 \
+  -peers second:peer-token:wss://peer-2.example.com/connect
+```
+
+### Metrics
+
+The example server registers Prometheus session metrics at startup and exposes
+them at `/metrics`. In split mode, `/metrics` is on the internal
+`-proxy-listen` port; in single mode, it shares the `-listen` port because no
+separate internal listener exists:
+
+```shell
+# single mode
+curl -s http://127.0.0.1:8123/metrics | grep session_server
+# split mode: use the -proxy-listen port
+curl -s http://127.0.0.1:8124/metrics | grep session_server
+```
+
+Scrape it with any Prometheus-compatible collector. The main metric families
+are:
+
+> Note: Session metrics appear only after sessions or tunnel traffic have been
+> observed. An idle server may expose only Go runtime and promhttp metrics.
+
+- `session_server_total_add_websocket_session` /
+  `total_remove_websocket_session`: client sessions added and removed,
+  labeled by `clientkey` and `peer`.
+- `session_server_total_add_connections` /
+  `total_remove_connections`: tunneled connections opened and closed,
+  labeled by `clientkey`, `proto`, and `addr`.
+- `session_server_total_transmit_bytes` /
+  `total_receive_bytes` / `total_error_bytes`: tunnel traffic volume per
+  client.
+- `session_server_total_peer_ws_attempt` /
+  `total_peer_ws_connected` / `total_peer_ws_disconnected`: HA peer
+  connection attempts and state changes, labeled by `peer`.
+
+The endpoint is unauthenticated. In split mode it is intentionally restricted
+to the internal proxy listener; in single mode, keep the listener on a trusted
+network or protect it with a reverse proxy.
+
 ### Current limitations
 
 - The example client currently requires `-token-file`; older client commands
   without a token file must be migrated when server client authentication is
   enabled.
 - If `-client-auth-file` is omitted, the example server accepts any non-empty
-  `X-Tunnel-ID`. Treat this as an unsafe compatibility mode, never as a public
-  deployment configuration.
+  `X-Tunnel-ID`; a token is not required by the server in this mode, although
+  the example client still requires and sends a token file. Treat this as an
+  unsafe compatibility mode, never as a public deployment configuration.
 - In single mode, `/client/...` shares the listener with `/connect`; network
   isolation is required to prevent direct public access to the proxy route.
 - The proxy forwards individual HTTP/HTTPS/WS/WSS requests. It does not rewrite
   HTML, JavaScript, CSS, redirects, cookies, or absolute resource URLs, so it is
   not a transparent whole-site reverse proxy.
-- Complete IPv6 authority handling, client outbound allowlists, full timeout and
-  concurrency limits, CLI private-CA options for client/peer, and full TLS
-  integration tests remain follow-up work.
+- Peer TLS verification can be configured with `-peer-ca-file`; without it,
+  peer certificates must chain to the system CA store. Client-side outbound
+  target allowlists are intentionally not provided; client requests use the
+  same network access as direct requests from the client host.
 - Do not enable `-debug` in production. It enables tunnel data debugging and can
-  expose sensitive payloads in logs.
+  expose sensitive payloads in logs. The `CATTLE_TUNNEL_DATA_DEBUG=true`
+  environment variable has the same effect. The client example's `-debug`
+  option controls its log level; the server's `-debug` option enables
+  `PrintTunnelData`.
+- `/metrics` exposes Prometheus counters for sessions, peers, and tunnel traffic;
+  in split mode it is available on `-proxy-listen`, while single mode shares
+  `-listen`.
 
 # Versioning
 
