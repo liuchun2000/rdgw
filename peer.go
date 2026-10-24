@@ -121,6 +121,7 @@ outer:
 		_, err = session.Serve(ctx)
 		s.sessions.removeListener(session)
 		session.Close()
+		metrics.IncSMTotalPeerDisConnected(p.id)
 
 		if err != nil {
 			logrus.Errorf("Failed to serve peer connection %s: %v", p.id, err)

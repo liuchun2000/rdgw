@@ -4,7 +4,8 @@ The current supported release lines are:
 
 | RemoteDialer Branch | RemoteDialer Minor version
 |---------------------|------------------------------------|
-| main         | v0.6
-| release/v0.5 | v0.5
-| release/v0.4 | v0.4
-| release/v0.3 | v0.3
+| after fork main     | v0.7(customize start)
+| before fork main    | v0.6
+| release/v0.5        | v0.5
+| release/v0.4        | v0.4
+| release/v0.3        | v0.3

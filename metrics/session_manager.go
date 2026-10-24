@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"os"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -9,6 +10,8 @@ import (
 const metricsEnv = "CATTLE_PROMETHEUS_METRICS"
 
 var prometheusMetrics = false
+
+var defaultRegisterOnce sync.Once
 
 var (
 	TotalAddWS = prometheus.NewCounterVec(
@@ -98,10 +101,11 @@ var (
 	)
 )
 
-// Register registers a series of session
-// metrics for Prometheus.
+// Register registers session metrics for Prometheus. It is safe to call repeatedly.
 func Register() {
-	MustRegister(prometheus.DefaultRegisterer)
+	defaultRegisterOnce.Do(func() {
+		MustRegister(prometheus.DefaultRegisterer)
+	})
 }
 
 // MustRegister registers all metrics with the provided registerer

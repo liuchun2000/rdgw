@@ -4,23 +4,25 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
 )
 
 type wsWrapper struct {
-	// Mutex is used to protect from concurrent usage of the websocket connection
-	sync.Mutex
+	// writeMu 保护并发 WebSocket 写入，并支持按 deadline 获取。
+	writeMu chan struct{}
 	// conn is the underlying websocket connection
 	conn *websocket.Conn
 }
 
 func newWSConn(conn *websocket.Conn) *wsWrapper {
 	w := &wsWrapper{
-		conn: conn,
+		conn:    conn,
+		writeMu: make(chan struct{}, 1),
 	}
+	w.writeMu <- struct{}{}
+	conn.SetReadLimit(maxBufferLimit)
 	w.setupDeadline()
 	return w
 }
@@ -37,35 +39,44 @@ type wsConn interface {
 }
 
 func (w *wsWrapper) WriteControl(messageType int, deadline time.Time, data []byte) error {
-	w.Lock()
-	defer w.Unlock()
+	if err := w.acquireWrite(deadline); err != nil {
+		return err
+	}
+	defer w.releaseWrite()
 
 	return w.conn.WriteControl(messageType, data, deadline)
 }
 
 func (w *wsWrapper) WriteMessage(messageType int, deadline time.Time, data []byte) error {
+	if err := w.acquireWrite(deadline); err != nil {
+		return err
+	}
+	defer w.releaseWrite()
+
+	if err := w.conn.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	return w.conn.WriteMessage(messageType, data)
+}
+
+func (w *wsWrapper) acquireWrite(deadline time.Time) error {
 	if deadline.IsZero() {
-		w.Lock()
-		defer w.Unlock()
-		return w.conn.WriteMessage(messageType, data)
+		<-w.writeMu
+		return nil
 	}
 
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
-
-	done := make(chan error, 1)
-	go func() {
-		w.Lock()
-		defer w.Unlock()
-		done <- w.conn.WriteMessage(messageType, data)
-	}()
-
 	select {
+	case <-w.writeMu:
+		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("i/o timeout")
-	case err := <-done:
-		return err
 	}
+}
+
+func (w *wsWrapper) releaseWrite() {
+	w.writeMu <- struct{}{}
 }
 
 func (w *wsWrapper) NextReader() (int, io.Reader, error) {
@@ -79,9 +90,12 @@ func (w *wsWrapper) Close() error {
 func (w *wsWrapper) setupDeadline() {
 	w.conn.SetReadDeadline(time.Now().Add(PingWaitDuration))
 	w.conn.SetPingHandler(func(string) error {
-		w.Lock()
-		err := w.conn.WriteControl(websocket.PongMessage, []byte(""), time.Now().Add(PingWaitDuration))
-		w.Unlock()
+		deadline := time.Now().Add(PingWaitDuration)
+		if err := w.acquireWrite(deadline); err != nil {
+			return err
+		}
+		err := w.conn.WriteControl(websocket.PongMessage, []byte(""), deadline)
+		w.releaseWrite()
 		if err != nil {
 			return err
 		}

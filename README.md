@@ -447,10 +447,18 @@ network or protect it with a reverse proxy.
 - The proxy forwards individual HTTP/HTTPS/WS/WSS requests. It does not rewrite
   HTML, JavaScript, CSS, redirects, cookies, or absolute resource URLs, so it is
   not a transparent whole-site reverse proxy.
+- Each WebSocket data message and each tunnel read buffer is limited to 4 MiB;
+  exceeding the limit closes the affected tunnel connection.
+- Connect control messages are limited to 266 bytes. Oversized target addresses
+  are rejected instead of being truncated.
 - Peer TLS verification can be configured with `-peer-ca-file`; without it,
   peer certificates must chain to the system CA store. Client-side outbound
   target allowlists are intentionally not provided; client requests use the
   same network access as direct requests from the client host.
+- The server does not originate WebSocket ping frames for client sessions. It
+  relies on the client sending periodic ping frames; the example client does
+  this automatically. Custom clients must implement the same heartbeat or the
+  server will close an idle connection after 60 seconds.
 - Do not enable `-debug` in production. It enables tunnel data debugging and can
   expose sensitive payloads in logs. The `CATTLE_TUNNEL_DATA_DEBUG=true`
   environment variable has the same effect. The client example's `-debug`
