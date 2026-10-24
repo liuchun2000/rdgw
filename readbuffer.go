@@ -12,8 +12,11 @@ import (
 )
 
 const (
-	MaxBuffer = 1 << 21
+	MaxBuffer      = 1 << 21
+	maxBufferLimit = MaxBuffer * 2
 )
+
+var errReadBufferLimit = fmt.Errorf("remotedialer read buffer exceeded %d bytes", maxBufferLimit)
 
 type readBuffer struct {
 	id, readCount, offerCount int64
@@ -48,20 +51,35 @@ func (r *readBuffer) Offer(reader io.Reader) error {
 		return r.err
 	}
 
-	if n, err := io.Copy(&r.buf, reader); err != nil {
-		r.offerCount += n
+	remaining := int64(maxBufferLimit - r.buf.Len())
+	if remaining < 0 {
+		return errReadBufferLimit
+	}
+
+	// 只向内存缓冲写入剩余容量，并额外探测一个字节判断是否超限。
+	n, err := io.Copy(&r.buf, io.LimitReader(reader, remaining))
+	r.offerCount += n
+	if err != nil {
 		return err
-	} else if n > 0 {
-		r.offerCount += n
+	}
+
+	if n == remaining {
+		var extra [1]byte
+		extraN, extraErr := io.ReadFull(reader, extra[:])
+		if extraN > 0 {
+			return errReadBufferLimit
+		}
+		if extraErr != nil && !errors.Is(extraErr, io.EOF) && !errors.Is(extraErr, io.ErrUnexpectedEOF) {
+			return extraErr
+		}
+	}
+
+	if n > 0 {
 		r.cond.Broadcast()
 	}
 
 	if r.buf.Len() > MaxBuffer {
 		r.backPressure.Pause()
-	}
-
-	if r.buf.Len() > MaxBuffer*2 {
-		logrus.Debugf("remotedialer buffer exceeded id=%d, length: %d", r.id, r.buf.Len())
 	}
 
 	return nil

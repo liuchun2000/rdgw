@@ -93,9 +93,11 @@ func (c *connection) Write(b []byte) (int, error) {
 		return 0, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	writeDeadline := c.GetWriteDeadline()
 	if !writeDeadline.IsZero() {
 		ctx, cancel = context.WithDeadline(ctx, writeDeadline)
+		defer cancel()
 		go func(ctx context.Context) {
 			<-ctx.Done()
 			if ctx.Err() == context.DeadlineExceeded {

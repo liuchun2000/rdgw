@@ -37,6 +37,8 @@ const (
 	SyncConnections
 )
 
+const maxConnectMessageBytes = 266
+
 var (
 	idCounter      int64
 	legacyDeadline = (15 * time.Second).Milliseconds()
@@ -162,9 +164,12 @@ func newServerMessage(reader io.Reader) (*message, error) {
 	}
 
 	if m.messageType == Connect {
-		bytes, err := ioutil.ReadAll(io.LimitReader(buf, 266))
+		bytes, err := ioutil.ReadAll(io.LimitReader(buf, int64(maxConnectMessageBytes+1)))
 		if err != nil {
 			return nil, err
+		}
+		if len(bytes) > maxConnectMessageBytes {
+			return nil, fmt.Errorf("connect address exceeds %d bytes", maxConnectMessageBytes)
 		}
 		parts := strings.SplitN(string(bytes), "/", 2)
 		if len(parts) != 2 {
@@ -225,7 +230,10 @@ func (m *message) Read(p []byte) (int, error) {
 
 func (m *message) WriteTo(deadline time.Time, wsConn wsConn) (int, error) {
 	err := wsConn.WriteMessage(websocket.BinaryMessage, deadline, m.Bytes())
-	return len(m.bytes), err
+	if err != nil {
+		return 0, err
+	}
+	return len(m.bytes), nil
 }
 
 func (m *message) String() string {

@@ -3,6 +3,7 @@ package remotedialer
 import (
 	"errors"
 	"io"
+	"testing"
 	"time"
 )
 
@@ -27,4 +28,19 @@ func (f fakeWSConn) WriteMessage(messageType int, deadline time.Time, data []byt
 
 func (f fakeWSConn) WriteControl(int, time.Time, []byte) error {
 	return errors.New("not implemented")
+}
+
+func TestWSWrapperWriteMessageTimeoutDoesNotLeaveWriterBlocked(t *testing.T) {
+	conn := testServerWS(t, nil)
+	wrapper := newWSConn(conn)
+
+	<-wrapper.writeMu
+	if err := wrapper.WriteMessage(1, time.Now().Add(20*time.Millisecond), []byte("blocked")); err == nil {
+		t.Fatal("WriteMessage succeeded while the write lock was held")
+	}
+	wrapper.writeMu <- struct{}{}
+
+	if err := wrapper.WriteMessage(1, time.Now().Add(time.Second), []byte("available")); err != nil {
+		t.Fatalf("WriteMessage remained blocked after timeout: %v", err)
+	}
 }

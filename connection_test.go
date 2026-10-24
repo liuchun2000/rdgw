@@ -47,3 +47,29 @@ func TestConnectionSetWriteDeadlineConcurrentWrite(t *testing.T) {
 	close(start)
 	wg.Wait()
 }
+
+func TestConnectionWriteDeadlineDoesNotCloseSuccessfulWrite(t *testing.T) {
+	s := setupDummySession(t, 0)
+	s.conn = &fakeWSConn{
+		writeMessageCallback: func(int, time.Time, []byte) error {
+			return nil
+		},
+	}
+	conn := newConnection(getDummyConnectionID(), s, "test", "test")
+	s.addConnection(conn.connID, conn)
+
+	if err := conn.SetWriteDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("test")); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if err := conn.Err(); err != nil {
+		t.Fatalf("successful write closed the connection: %v", err)
+	}
+	if got := s.getConnection(conn.connID); got != conn {
+		t.Fatal("successful write removed the connection after its deadline")
+	}
+}
