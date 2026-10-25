@@ -183,22 +183,46 @@ func (sm *sessionManager) listClients() []string {
 
 func (sm *sessionManager) getDialer(clientKey string) (Dialer, error) {
 	sm.Lock()
-	defer sm.Unlock()
-
-	sessions := sm.clients[clientKey]
-	if len(sessions) > 0 {
-		return toDialer(sessions[0], ""), nil
+	localSessions := append([]*Session(nil), sm.clients[clientKey]...)
+	if len(localSessions) > 0 {
+		sm.Unlock()
+		return fallbackDialer(localSessions, ""), nil
 	}
 
+	var peerSessions []*Session
 	for _, sessions := range sm.peers {
 		for _, session := range sessions {
 			if session.hasSessionKey(clientKey) {
-				return toDialer(session, clientKey), nil
+				peerSessions = append(peerSessions, session)
 			}
 		}
 	}
+	sm.Unlock()
+	if len(peerSessions) > 0 {
+		return fallbackDialer(peerSessions, clientKey), nil
+	}
 
 	return nil, fmt.Errorf("failed to find Session for client %s", clientKey)
+}
+
+func fallbackDialer(sessions []*Session, prefix string) Dialer {
+	return func(ctx context.Context, proto, address string) (net.Conn, error) {
+		var lastErr error
+		for _, session := range sessions {
+			conn, err := toDialer(session, prefix)(ctx, proto, address)
+			if err == nil {
+				return conn, nil
+			}
+			lastErr = err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+		}
+		if lastErr == nil {
+			return nil, fmt.Errorf("no session available")
+		}
+		return nil, lastErr
+	}
 }
 
 func (sm *sessionManager) add(clientKey string, conn *websocket.Conn, peer bool) *Session {

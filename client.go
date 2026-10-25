@@ -78,8 +78,8 @@ func ConnectToProxyWithDialer(rootCtx context.Context, proxyURL string, headers 
 	}
 
 	go func() {
-		_, err = session.Serve(ctx)
-		result <- err
+		_, serveErr := session.Serve(ctx)
+		result <- serveErr
 	}()
 
 	logrus.WithField("url", proxyURL).Info("Connected to proxy")

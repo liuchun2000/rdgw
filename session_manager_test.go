@@ -1,6 +1,8 @@
 package remotedialer
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -132,4 +134,26 @@ func TestSessionManagerNotificationQueueOverflowClosesListener(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("listener was not closed after notification queue overflow")
 	}
+}
+
+func TestFallbackDialerUsesNextSessionAfterFailure(t *testing.T) {
+	first := newSession(1, "client", fakeWSConn{
+		writeMessageCallback: func(int, time.Time, []byte) error {
+			return errors.New("first session unavailable")
+		},
+	})
+	second := newSession(2, "client", fakeWSConn{
+		writeMessageCallback: func(int, time.Time, []byte) error {
+			return nil
+		},
+	})
+
+	conn, err := fallbackDialer([]*Session{first, second}, "")(context.Background(), "tcp", "127.0.0.1:80")
+	if err != nil {
+		t.Fatalf("fallbackDialer returned error: %v", err)
+	}
+	if conn == nil {
+		t.Fatal("fallbackDialer returned nil connection")
+	}
+	_ = conn.Close()
 }

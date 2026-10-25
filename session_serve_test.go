@@ -3,6 +3,7 @@ package remotedialer
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -12,6 +13,19 @@ import (
 	"testing"
 	"time"
 )
+
+func TestSession_serveMessageRejectsUnknownType(t *testing.T) {
+	s := setupDummySession(t, 0)
+	var payload bytes.Buffer
+	for _, value := range []int64{1, 0, 999} {
+		var encoded [binary.MaxVarintLen64]byte
+		n := binary.PutVarint(encoded[:], value)
+		payload.Write(encoded[:n])
+	}
+	if err := s.serveMessage(context.Background(), &payload); err == nil {
+		t.Fatal("serveMessage accepted an unknown message type")
+	}
+}
 
 func TestSession_clientConnect(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
