@@ -151,6 +151,26 @@ chmod 600 conf/foo.token
 chmod 600 conf/client-auth.json
 ```
 
+### Library API notes
+
+`ConnectToProxyWithDialer` is the client entry point for supplying a custom
+local `Dialer`. The dialer is used when the remote server asks the client to
+open a connection, so it can apply local routing, network namespaces, or other
+connection policy. Pass `nil` to use the default `net.Dialer` behavior via
+`ConnectToProxy`.
+
+`Server.HasSession(clientKey)` reports whether a client session is currently
+available. `Server.ListClients()` returns the currently known client keys,
+including clients learned through peering. `Session.Dial(ctx, proto, address)`
+opens a tunneled connection from an existing session and returns a
+`net.Conn`.
+
+The server-side `Server.ClientConnectAuthorizer` controls Connect requests
+initiated by the client. It is deliberately unset by `New`, which means such
+requests are denied by default. Applications that need client-initiated
+connections must set this field explicitly and authorize the requested
+protocol and address.
+
 ### Recommended split listeners
 
 Split mode keeps the public client connection endpoint separate from the
@@ -223,6 +243,9 @@ Single mode preserves the legacy command shape, but `/connect` and `/client/...`
 share one listener. Use it only when the listener is protected by a trusted
 internal network boundary. Do not expose this port directly to the public
 Internet.
+
+`-listener-mode` defaults to `single`. Split mode requires both
+`-connect-listen` and `-proxy-listen` and forbids `-listen`.
 
 ```shell
 ./server/server \
@@ -359,6 +382,11 @@ certificates for WSS peers and must be configured before peers are added. This
 option does not affect ordinary client WSS connections or upstream HTTPS/WSS
 trust settings.
 
+Multiple peers are separated by commas, for example
+`-peers first:token-a:ws://first/connect,second:token-b:ws://second/connect`.
+The peer notification protocol encodes a client as `clientKey/sessionKey`;
+therefore client keys must not contain `/` when peering is enabled.
+
 ```shell
 ./server/server \
   -listener-mode single \
@@ -435,6 +463,22 @@ are:
 The endpoint is unauthenticated. In split mode it is intentionally restricted
 to the internal proxy listener; in single mode, keep the listener on a trusted
 network or protect it with a reverse proxy.
+
+The library's metrics package also auto-registers these metrics during package
+initialization when `CATTLE_PROMETHEUS_METRICS=true`. Otherwise metric updates
+remain disabled until the application calls `metrics.Register()` or
+`metrics.MustRegister(...)` explicitly.
+
+### fakek8s example
+
+`examples/fakek8s` is a small TCP echo client used for Kubernetes and tunnel
+integration checks. It connects to `TARGET_HOST:TARGET_PORT`, sends an initial
+message, and echoes received bytes. `TARGET_HOST` defaults to
+`api-extension.cattle-system.svc.cluster.local`, `TARGET_PORT` to `6666`, and
+`SEND_INTERVAL` to `5` seconds. The included
+[`fakek8s.yaml`](examples/fakek8s/fakek8s.yaml) deploys it in the
+`cattle-system` namespace; [`Dockerfile`](examples/fakek8s/Dockerfile) builds
+the image.
 
 ### Current limitations
 
