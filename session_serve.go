@@ -37,6 +37,8 @@ func (s *Session) serveMessage(ctx context.Context, reader io.Reader) error {
 		s.resumeConnection(message.connID)
 	case Error:
 		s.closeConnection(message.connID, message.Err())
+	default:
+		return fmt.Errorf("unknown message type %d", message.messageType)
 	}
 	return nil
 }

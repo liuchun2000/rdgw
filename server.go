@@ -104,7 +104,8 @@ func (s *Server) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 	wsConn, err := upgrader.Upgrade(rw, req, nil)
 	if err != nil {
-		s.errorWriter(rw, req, 400, errors.Wrapf(err, "Error during upgrade for host [%v]", clientKey))
+		// Upgrader.Error 已经负责写入失败响应；这里只记录错误，避免重复写响应。
+		logrus.WithError(errors.Wrapf(err, "Error during upgrade for host [%v]", clientKey)).Warn("websocket upgrade failed")
 		return
 	}
 

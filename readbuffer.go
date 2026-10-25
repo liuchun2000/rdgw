@@ -109,10 +109,13 @@ func (r *readBuffer) Read(b []byte) (int, error) {
 		if r.buf.Len() > 0 {
 			n, err := r.buf.Read(b)
 			if err != nil {
-				// The definition of bytes.Buffer is that this will always return nil because
-				// we first checked that bytes.Buffer.Len() > 0. We assume that fact so just assert
-				// that here.
-				panic("bytes.Buffer returned err=\"" + err.Error() + "\" when buffer length was > 0")
+				// bytes.Buffer 在 Len() > 0 时通常不会返回错误；若内部不变量被破坏，
+				// 将错误限制在当前连接，避免整个进程因单条隧道崩溃。
+				readErr := fmt.Errorf("read buffer invariant violated: %w", err)
+				r.err = readErr
+				r.cond.Broadcast()
+				r.cond.L.Unlock()
+				return 0, readErr
 			}
 			r.readCount += int64(n)
 			r.cond.Broadcast()
