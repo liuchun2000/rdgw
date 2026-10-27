@@ -23,9 +23,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/liuchun2000/rdgw"
+	"github.com/liuchun2000/rdgw/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rancher/remotedialer"
-	"github.com/rancher/remotedialer/metrics"
 	"github.com/sirupsen/logrus"
 )
 
@@ -217,7 +217,7 @@ type transportPool struct {
 	transports map[string]*http.Transport
 }
 
-func (p *transportPool) get(clientKey string, server *remotedialer.Server, cfg proxyConfig) *http.Transport {
+func (p *transportPool) get(clientKey string, server *rdgw.Server, cfg proxyConfig) *http.Transport {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.transports == nil {
@@ -240,7 +240,7 @@ func (p *transportPool) close() {
 	}
 }
 
-func newTransport(dialer remotedialer.Dialer, cfg proxyConfig) *http.Transport {
+func newTransport(dialer rdgw.Dialer, cfg proxyConfig) *http.Transport {
 	transport := &http.Transport{
 		Proxy:                 nil,
 		ForceAttemptHTTP2:     false,
@@ -312,7 +312,7 @@ func targetPath(req *http.Request) (string, error) {
 	return "/" + strings.Join(parts[5:], "/"), nil
 }
 
-func newProxy(server *remotedialer.Server, req *http.Request, cfg proxyConfig) (*httputil.ReverseProxy, error) {
+func newProxy(server *rdgw.Server, req *http.Request, cfg proxyConfig) (*httputil.ReverseProxy, error) {
 	clientKey := req.PathValue("id")
 	scheme := req.PathValue("scheme")
 	_, _, hostAuthority, err := normalizeTarget(scheme, req.PathValue("host"))
@@ -360,7 +360,7 @@ func newProxy(server *remotedialer.Server, req *http.Request, cfg proxyConfig) (
 	return proxy, nil
 }
 
-func proxyRequest(server *remotedialer.Server, rw http.ResponseWriter, req *http.Request, cfg proxyConfig) {
+func proxyRequest(server *rdgw.Server, rw http.ResponseWriter, req *http.Request, cfg proxyConfig) {
 	if !tryAcquire(cfg.httpLimit) {
 		http.Error(rw, "proxy busy", http.StatusServiceUnavailable)
 		return
@@ -379,7 +379,7 @@ func isWebSocketRequest(req *http.Request) bool {
 		strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade")
 }
 
-func dispatch(server *remotedialer.Server, rw http.ResponseWriter, req *http.Request, cfg proxyConfig) {
+func dispatch(server *rdgw.Server, rw http.ResponseWriter, req *http.Request, cfg proxyConfig) {
 	if isWebSocketRequest(req) {
 		if req.Method != http.MethodGet {
 			rw.Header().Set("Allow", http.MethodGet)
@@ -465,7 +465,7 @@ func main() {
 		logrus.SetLevel(logrus.DebugLevel)
 		// 提醒：-debug 会把隧道明文（含 Cookie/JWT）写入日志，禁止用于生产
 		logrus.Warn("debug mode enables PrintTunnelData; tunnel payloads (cookies/JWT) will be logged")
-		remotedialer.PrintTunnelData = true
+		rdgw.PrintTunnelData = true
 	}
 
 	auth := &authStore{authFile: clientAuthFile, originFile: originFile}
@@ -515,7 +515,7 @@ func main() {
 		socksLimit:            socksLimitCh,
 		transports:            &transportPool{transports: make(map[string]*http.Transport)},
 	}
-	handler := remotedialer.New(auth.authorize, remotedialer.DefaultErrorWriter)
+	handler := rdgw.New(auth.authorize, rdgw.DefaultErrorWriter)
 	handler.PeerToken = peerToken
 	handler.PeerID = peerID
 	if peerRoots != nil {

@@ -1,4 +1,4 @@
-package remotedialer
+package rdgw
 
 import (
 	"encoding/binary"

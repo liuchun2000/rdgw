@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rancher/remotedialer"
+	"github.com/liuchun2000/rdgw"
 	"github.com/sirupsen/logrus"
 )
 
@@ -20,7 +20,7 @@ import (
 //   - target   从 SOCKS5 CONNECT 请求的 ADDR:PORT 拿
 //
 // 握手成功后，通过 server.Dialer(clientKey) 拨号，然后裸字节双向透传。
-func handleSocks5(server *remotedialer.Server, c net.Conn, limit chan struct{}) {
+func handleSocks5(server *rdgw.Server, c net.Conn, limit chan struct{}) {
 	defer c.Close()
 	if !tryAcquire(limit) {
 		_, _ = c.Write([]byte{0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
@@ -252,7 +252,7 @@ func (s *socks5Listener) Close() error {
 }
 func (s *socks5Listener) Errors() <-chan error { return s.errCh }
 
-func containsClient(server *remotedialer.Server, clientID string) bool {
+func containsClient(server *rdgw.Server, clientID string) bool {
 	for _, id := range server.ListClients() {
 		if id == clientID {
 			return true
@@ -261,7 +261,7 @@ func containsClient(server *remotedialer.Server, clientID string) bool {
 	return false
 }
 
-func startSocks5Listener(server *remotedialer.Server, listenAddr string, limit chan struct{}) (*socks5Listener, error) {
+func startSocks5Listener(server *rdgw.Server, listenAddr string, limit chan struct{}) (*socks5Listener, error) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return nil, err

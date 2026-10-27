@@ -1,4 +1,4 @@
-package remotedialer
+package rdgw
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/rancher/remotedialer/metrics"
+	"github.com/liuchun2000/rdgw/metrics"
 	"github.com/sirupsen/logrus"
 )
 
