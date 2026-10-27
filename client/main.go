@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/rancher/remotedialer"
+	"github.com/liuchun2000/rdgw"
 	"github.com/sirupsen/logrus"
 )
 
@@ -58,7 +58,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := runWithReconnect(ctx, time.Second, time.Minute, func(ctx context.Context) error {
-		return remotedialer.ConnectToProxy(ctx, addr, headers, func(string, string) bool { return true }, nil, nil)
+		return rdgw.ConnectToProxy(ctx, addr, headers, func(string, string) bool { return true }, nil, nil)
 	}); err != nil {
 		logrus.WithError(err).Error("client stopped")
 	}

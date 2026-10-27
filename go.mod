@@ -1,4 +1,4 @@
-module github.com/rancher/remotedialer
+module github.com/liuchun2000/rdgw
 
 go 1.25.0
 
