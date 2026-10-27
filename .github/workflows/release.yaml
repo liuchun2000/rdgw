@@ -17,9 +17,15 @@ jobs:
       - name: Create release on Github
         env:
           GH_TOKEN:  ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          if [[ "${{ github.ref_name }}" == *-rc* ]]; then
-            gh --repo "${{ github.repository }}" release create ${{ github.ref_name }} --verify-tag --generate-notes --prerelease
+          if gh --repo "$REPO" release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists, skipping create"
+            exit 0
+          fi
+          if [[ "$RELEASE_TAG" == *-rc* ]]; then
+            gh --repo "$REPO" release create "$RELEASE_TAG" --verify-tag --generate-notes --prerelease
           else
-            gh --repo "${{ github.repository }}" release create ${{ github.ref_name }} --verify-tag --generate-notes
+            gh --repo "$REPO" release create "$RELEASE_TAG" --verify-tag --generate-notes
           fi
