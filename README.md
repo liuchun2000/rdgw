@@ -1,6 +1,13 @@
 Reverse Tunneling Dialer
 ========================
 
+rdgw is a maintained fork of Rancher's
+[remotedialer](https://github.com/rancher/remotedialer). The Go module path is:
+
+```go
+import "github.com/liuchun2000/rdgw"
+```
+
 remotedialer creates a two-way connection between a server and a client, so
 that a `net.Dial` can be performed on the server and actually connects to the
 client running services accessible on localhost or behind a NAT or firewall.
