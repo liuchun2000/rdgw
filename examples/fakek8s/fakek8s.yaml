@@ -17,7 +17,8 @@ spec:
     spec:
       containers:
       - name: fakek8s
-        image: rancher/fakek8s:latest
+        # 由 examples/fakek8s/Dockerfile 构建后加载到集群；不要拉取上游 rancher/fakek8s
+        image: fakek8s:latest
         imagePullPolicy: IfNotPresent
         env:
         - name: TARGET_HOST

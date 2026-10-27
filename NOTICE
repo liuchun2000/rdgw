@@ -1,0 +1,28 @@
+rdgw
+Copyright 2026 liuchun2000
+
+This product is a derivative work of remotedialer
+(https://github.com/rancher/remotedialer), which is licensed under the
+Apache License, Version 2.0. The full license text is reproduced in LICENSE.
+
+Upstream baseline: commit 2603731 ("add https/wss/tcp support", 2026-09-30),
+on the v0.6 release line.
+
+Modifications made in this derivative work:
+
+  - module path renamed to github.com/liuchun2000/rdgw and package renamed to rdgw
+  - client token authentication: per-client multi-token store, constant-time
+    comparison, SIGHUP hot reload with last-known-good snapshot
+  - Origin allowlist for /connect handshakes
+  - split listener mode separating the public /connect endpoint from the
+    internal /client and /metrics endpoints
+  - httputil.ReverseProxy based HTTP/HTTPS/WS/WSS proxying with per-client
+    shared transports; explicit port and IPv6 authority handling; escaped
+    path preservation
+  - SOCKS5 egress listener for arbitrary TCP (SSH and other protocols)
+  - peer TLS verification with CA bundle support; the upstream peer dialer
+    used InsecureSkipVerify
+  - per-listener session notification queues, multi-session dial fallback,
+    read buffer and WebSocket frame size limits, deadline synchronisation
+  - proxy concurrency limits, response header and body idle timeouts,
+    graceful shutdown with listener rollback
