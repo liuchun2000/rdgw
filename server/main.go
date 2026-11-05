@@ -312,6 +312,30 @@ func targetPath(req *http.Request) (string, error) {
 	return "/" + strings.Join(parts[5:], "/"), nil
 }
 
+// applyRewrite 把内部路径与目标地址写回 ReverseProxy 的出站请求。
+//
+// X-Forwarded-* 必须按“目标 scheme”推导，不能沿用 SetXForwarded 的入站推导：
+// 经 rdgw 的入站请求永远是明文 HTTP（客户端连的是 http://proxy/client/...），
+// 若把入站的 X-Forwarded-Proto 原样带给 wss/https 目标，目标侧的 nginx 一类网关
+// 会判定“原始请求是 http”并返回 301/308 强制跳转，WebSocket 握手直接失败。
+// 同理 X-Forwarded-Host 也改成目标 authority，避免把 proxy 自己的地址泄露给上游，
+// 并让网关基于 Host 拼出的跳转地址指向目标而不是 proxy。
+func applyRewrite(pr *httputil.ProxyRequest, target *url.URL, hostAuthority, path, pathEscaped, targetScheme string) {
+	pr.SetURL(target)
+	pr.Out.URL.Path = path
+	if path != pathEscaped {
+		pr.Out.URL.RawPath = pathEscaped
+	}
+	pr.Out.Host = hostAuthority
+	pr.SetXForwarded()
+	proto := "http"
+	if targetScheme == "https" {
+		proto = "https"
+	}
+	pr.Out.Header.Set("X-Forwarded-Proto", proto)
+	pr.Out.Header.Set("X-Forwarded-Host", hostAuthority)
+}
+
 func newProxy(server *rdgw.Server, req *http.Request, cfg proxyConfig) (*httputil.ReverseProxy, error) {
 	clientKey := req.PathValue("id")
 	scheme := req.PathValue("scheme")
@@ -344,13 +368,7 @@ func newProxy(server *rdgw.Server, req *http.Request, cfg proxyConfig) (*httputi
 		Transport:     idleTimeoutTransport{base: transport, timeout: cfg.idleTimeout},
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
-			pr.SetURL(target)
-			pr.Out.URL.Path = path
-			if path != pathEscaped {
-				pr.Out.URL.RawPath = pathEscaped
-			}
-			pr.Out.Host = hostAuthority
-			pr.SetXForwarded()
+			applyRewrite(pr, target, hostAuthority, path, pathEscaped, targetScheme)
 		},
 		ErrorHandler: func(rw http.ResponseWriter, r *http.Request, err error) {
 			logrus.Errorf("proxy %s://%s via client %s failed: %v", scheme, hostAuthority, clientKey, err)

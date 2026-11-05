@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"strings"
@@ -113,6 +114,59 @@ func TestNormalizeTargetIPv6Authority(t *testing.T) {
 	}
 	if authority != "[2001:db8::1]:8443" {
 		t.Fatalf("authority = %q, want [2001:db8::1]:8443", authority)
+	}
+}
+
+// 回归：X-Forwarded-Proto 必须跟随目标 scheme，而不是入站请求。
+// 入站永远是明文 HTTP（http://proxy/client/...）；若把它带给 wss/https 目标，
+// 目标侧网关会当成 http 请求并返回 301/308 强制跳转，WebSocket 握手报
+// InvalidURI: scheme isn't ws or wss。
+func TestApplyRewriteForwardedProtoFollowsTargetScheme(t *testing.T) {
+	cases := []struct {
+		name         string
+		targetScheme string
+		inboundProto string
+		wantProto    string
+	}{
+		{name: "wss target over plain inbound", targetScheme: "https", inboundProto: "http", wantProto: "https"},
+		{name: "https target over plain inbound", targetScheme: "https", inboundProto: "", wantProto: "https"},
+		{name: "ws target keeps plain http", targetScheme: "http", inboundProto: "https", wantProto: "http"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := httptest.NewRequest(http.MethodGet,
+				"http://10.0.0.1:8124/client/foo/wss/service.internal/api/v1/um/execContainer?clusterId=js1", nil)
+			in.RemoteAddr = "192.0.2.9:41234"
+			if tc.inboundProto != "" {
+				in.Header.Set("X-Forwarded-Proto", tc.inboundProto)
+			}
+			out := in.Clone(context.Background())
+			pr := &httputil.ProxyRequest{In: in, Out: out}
+			target := &url.URL{Scheme: tc.targetScheme, Host: "service.internal"}
+			applyRewrite(pr, target, "service.internal", "/api/v1/um/execContainer", "/api/v1/um/execContainer", tc.targetScheme)
+
+			if got := out.URL.Scheme; got != tc.targetScheme {
+				t.Fatalf("out scheme = %q, want %q", got, tc.targetScheme)
+			}
+			if got := out.URL.Host; got != "service.internal" {
+				t.Fatalf("out url host = %q, want service.internal", got)
+			}
+			if got := out.URL.Path; got != "/api/v1/um/execContainer" {
+				t.Fatalf("out path = %q, want /api/v1/um/execContainer", got)
+			}
+			if got := out.Host; got != "service.internal" {
+				t.Fatalf("out Host = %q, want service.internal", got)
+			}
+			if got := out.Header.Get("X-Forwarded-Proto"); got != tc.wantProto {
+				t.Fatalf("X-Forwarded-Proto = %q, want %q", got, tc.wantProto)
+			}
+			if got := out.Header.Get("X-Forwarded-Host"); got != "service.internal" {
+				t.Fatalf("X-Forwarded-Host = %q, want service.internal", got)
+			}
+			if got := out.Header.Get("X-Forwarded-For"); !strings.Contains(got, "192.0.2.9") {
+				t.Fatalf("X-Forwarded-For = %q, want client IP", got)
+			}
+		})
 	}
 }
 
